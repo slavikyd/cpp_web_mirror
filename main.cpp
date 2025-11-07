@@ -1,48 +1,61 @@
-#include <gst/gst.h>
-#include <glib.h>
-#include <signal.h>
+#include <opencv2/opencv.hpp>
+#include <boost/asio.hpp>
+#include <thread>
+#include <vector>
 
-static GMainLoop *loop;
+using boost::asio::ip::tcp;
 
-static void int_handler(int signo) {
-    if (loop != nullptr) {
-        g_main_loop_quit(loop);
+const std::string boundary = "--frame";
+const int PORT = 8080;
+
+void streamWebcam(tcp::socket socket) {
+    try {
+        cv::VideoCapture cap(0);  // Open USB webcam
+        if (!cap.isOpened()) return;
+
+        // HTTP headers for MJPEG stream
+        std::string header = "HTTP/1.0 200 OK\r\n"
+                             "Content-Type: multipart/x-mixed-replace; boundary=" + boundary + "\r\n\r\n";
+        boost::asio::write(socket, boost::asio::buffer(header));
+
+        cv::Mat frame;
+        std::vector<uchar> buf;
+        while (true) {
+            cap >> frame;
+            if (frame.empty()) break;
+            cv::imencode(".jpg", frame, buf);
+
+            std::string part_header = boundary + "\r\n"
+                                      "Content-Type: image/jpeg\r\n"
+                                      "Content-Length: " + std::to_string(buf.size()) + "\r\n\r\n";
+
+            boost::asio::write(socket, boost::asio::buffer(part_header));
+            boost::asio::write(socket, boost::asio::buffer(buf));
+            boost::asio::write(socket, boost::asio::buffer("\r\n"));
+
+            // Small delay for frame rate control
+            std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
+        }
+    } catch (...) {
+        // Handle exceptions or socket errors
     }
+    socket.close();
 }
 
-int main(int argc, char *argv[]) {
-    gst_init(&argc, &argv);
+int main() {
+    try {
+        boost::asio::io_context io_context;
+        tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), PORT));
 
-    GMainLoop *local_loop = g_main_loop_new(NULL, FALSE);
-    loop = local_loop;
+        while (true) {
+            tcp::socket socket(io_context);
+            acceptor.accept(socket);
 
-    // Build pipeline description:
-    // Capture webcam → Video conversion → Caps filter (resolution fps) → VP8 encoder → WebM mux → HTTP server sink
-    const gchar *pipeline_desc =
-        "v4l2src device=/dev/video0 ! "
-        "videoconvert ! "
-        "video/x-raw,width=640,height=480,framerate=30/1 ! "
-        "vp8enc deadline=1 ! "
-        "webmmux streamable=true name=mux ! "
-        "tcpserversink host=0.0.0.0 port=8080";
-
-    GError *error = NULL;
-    GstElement *pipeline = gst_parse_launch(pipeline_desc, &error);
-
-    if (!pipeline) {
-        g_print("Failed to create pipeline: %s\n", error->message);
-        g_error_free(error);
-        return -1;
+            // For each client, respond with MJPEG stream on a new thread
+            std::thread(streamWebcam, std::move(socket)).detach();
+        }
+    } catch (std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
     }
-
-    g_print("Streaming webcam on http://localhost:8080\n");
-
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
-    g_main_loop_run(loop);
-
-    gst_element_set_state(pipeline, GST_STATE_NULL);
-    gst_object_unref(pipeline);
-    g_main_loop_unref(loop);
-
     return 0;
 }

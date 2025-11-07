@@ -4,10 +4,12 @@
 #include <unistd.h>
 
 #include <condition_variable>
+#include <ctime>
 #include <cstring>
 #include <iostream>
 #include <mutex>
 #include <opencv2/opencv.hpp>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,10 +32,6 @@ bool send_all(int fd, const char* data, size_t len) {
     return true;
 }
 
-bool send_all_vec(int fd, const std::vector<char>& v) {
-    return send_all(fd, v.data(), v.size());
-}
-
 void camera_thread_func(int device_index, int width = 640, int height = 480, int fps = 30) {
     cv::VideoCapture cap(device_index);
     if (!cap.isOpened()) {
@@ -42,6 +40,7 @@ void camera_thread_func(int device_index, int width = 640, int height = 480, int
         frame_cv.notify_all();
         return;
     }
+
     cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
     cap.set(cv::CAP_PROP_FPS, fps);
@@ -56,25 +55,21 @@ void camera_thread_func(int device_index, int width = 640, int height = 480, int
             continue;
         }
 
-        // === Overlay section ===
+        // === Overlay crosshair ===
         int cx = frame.cols / 2;
         int cy = frame.rows / 2;
-
-        // Draw crosshair lines (white, 2 px thick)
         cv::line(frame, cv::Point(cx - 20, cy), cv::Point(cx + 20, cy), cv::Scalar(255, 255, 255), 2);
         cv::line(frame, cv::Point(cx, cy - 20), cv::Point(cx, cy + 20), cv::Scalar(255, 255, 255), 2);
 
-        // Add timestamp in top-left corner
+        // === Overlay timestamp ===
         auto t = std::time(nullptr);
         std::tm tm = *std::localtime(&t);
         char buf[64];
         std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-        std::string time_str(buf);
-
-        cv::putText(frame, time_str, cv::Point(10, 30),
+        cv::putText(frame, buf, cv::Point(10, 30),
                     cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
-        // === Encode to JPEG ===
+        // === Encode frame ===
         std::vector<uchar> buf_jpeg;
         cv::imencode(".jpg", frame, buf_jpeg, params);
 
@@ -90,32 +85,13 @@ void camera_thread_func(int device_index, int width = 640, int height = 480, int
     cap.release();
 }
 
-
-std::string read_request_line(int client_fd) {
-    std::string req;
-    char c;
-    // Read until CRLF
-    while (true) {
-        ssize_t r = ::recv(client_fd, &c, 1, 0);
-        if (r <= 0) break;
-        req.push_back(c);
-        size_t n = req.size();
-        if (n >= 2 && req[n-2] == '\r' && req[n-1] == '\n') break;
-        if (req.size() > 4096) break;
-    }
-    return req;
-}
-
 void handle_client(int client_fd) {
-    // Read the request header (simple parsing)
-    std::string request;
     char buf[4096];
     ssize_t r = ::recv(client_fd, buf, sizeof(buf) - 1, 0);
     if (r <= 0) { close(client_fd); return; }
     buf[r] = '\0';
-    request = std::string(buf);
+    std::string request(buf);
 
-    // Extract request line: e.g., "GET / HTTP/1.1"
     std::istringstream iss(request);
     std::string method, path, proto;
     iss >> method >> path >> proto;
@@ -125,85 +101,66 @@ void handle_client(int client_fd) {
     }
 
     if (path == "/" || path == "/index.html") {
-        // Serve a simple HTML page (inlined)
-        const std::string html =
+        std::string html =
             "HTTP/1.0 200 OK\r\n"
-            "Content-Type: text/html; charset=UTF-8\r\n"
-            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            "Content-Type: text/html\r\n"
+            "Cache-Control: no-cache\r\n"
             "Pragma: no-cache\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "<!doctype html>\n"
-            "<html>\n"
-            "<head>\n"
-            "  <meta charset=\"utf-8\">\n"
-            "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-            "  <title>Webcam MJPEG Stream</title>\n"
-            "</head>\n"
-            "<body>\n"
-            "  <h1>Webcam MJPEG Stream</h1>\n"
-            "  <p>If the image is blank, allow camera access on server or check device index.</p>\n"
-            "  <img src=\"/stream\" style=\"max-width:100%;height:auto;\" />\n"
-            "  <p>Open <code>http://localhost:8080/</code> in your browser.</p>\n"
-            "</body>\n"
-            "</html>\n";
+            "Connection: close\r\n\r\n"
+            "<!doctype html><html><head><title>Webcam Stream</title></head>"
+            "<body><h1>Webcam Stream</h1>"
+            "<img src=\"/stream\" style=\"max-width:100%;height:auto;\" />"
+            "</body></html>";
         send_all(client_fd, html.c_str(), html.size());
         close(client_fd);
         return;
-    } else if (path == "/stream") {
-        // Send MJPEG headers
-        std::string header = 
+    }
+
+    if (path == "/stream") {
+        std::string header =
             "HTTP/1.0 200 OK\r\n"
-            "Connection: close\r\n"
             "Cache-Control: no-cache\r\n"
             "Pragma: no-cache\r\n"
-            "Content-Type: multipart/x-mixed-replace; boundary=" + BOUNDARY + "\r\n"
-            "\r\n";
+            "Connection: close\r\n"
+            "Content-Type: multipart/x-mixed-replace; boundary=" + BOUNDARY + "\r\n\r\n";
         if (!send_all(client_fd, header.c_str(), header.size())) {
             close(client_fd);
             return;
         }
 
-        // Stream loop: send the latest_jpeg repeatedly
         while (running) {
             std::vector<uchar> frame_copy;
             {
                 std::unique_lock<std::mutex> lk(frame_mutex);
-                // Wait until first frame available or running becomes false
-                frame_cv.wait_for(lk, std::chrono::milliseconds(500), [] { return !latest_jpeg.empty() || !running; });
+                frame_cv.wait_for(lk, std::chrono::milliseconds(500),
+                                  [] { return !latest_jpeg.empty() || !running; });
                 if (!running) break;
-                frame_copy = latest_jpeg; // copy
+                frame_copy = latest_jpeg;
             }
             if (frame_copy.empty()) continue;
 
-            // Prepare part header
             std::ostringstream part;
             part << "--" << BOUNDARY << "\r\n"
                  << "Content-Type: image/jpeg\r\n"
-                 << "Content-Length: " << frame_copy.size() << "\r\n"
-                 << "\r\n";
-            std::string partHeader = part.str();
-            if (!send_all(client_fd, partHeader.c_str(), partHeader.size())) break;
+                 << "Content-Length: " << frame_copy.size() << "\r\n\r\n";
+            std::string part_header = part.str();
+
+            if (!send_all(client_fd, part_header.c_str(), part_header.size())) break;
             if (!send_all(client_fd, reinterpret_cast<const char*>(frame_copy.data()), frame_copy.size())) break;
             if (!send_all(client_fd, "\r\n", 2)) break;
 
-            // Small sleep to pace sending; you can adjust to control bandwidth / fps
-            std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30fps
+            std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 fps
         }
-        close(client_fd);
-        return;
-    } else {
-        // Not found
-        const std::string notfound =
-            "HTTP/1.0 404 Not Found\r\n"
-            "Content-Type: text/plain\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-            "404 Not Found\n";
-        send_all(client_fd, notfound.c_str(), notfound.size());
+
         close(client_fd);
         return;
     }
+
+    // 404 fallback
+    std::string notfound =
+        "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\n404 Not Found";
+    send_all(client_fd, notfound.c_str(), notfound.size());
+    close(client_fd);
 }
 
 int main(int argc, char** argv) {
@@ -212,9 +169,10 @@ int main(int argc, char** argv) {
     if (argc >= 2) device = std::stoi(argv[1]);
     if (argc >= 3) port = std::stoi(argv[2]);
 
-    std::cout << "Starting webcam streamer. Camera device: " << device << ", port: " << port << std::endl;
+    std::cout << "Starting webcam streamer (device=" << device
+              << ", port=" << port << ")\n";
 
-    std::thread cam_thread(camera_thread_func, device);
+    std::thread cam_thread(camera_thread_func, device, 640, 480, 30);
 
     int server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -248,11 +206,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Listening on port " << port << ". Open http://localhost:" << port << "/ in a browser.\n";
+    std::cout << "Listening on port " << port
+              << ". Open http://localhost:" << port << "/\n";
 
-    // Accept loop
     while (running) {
-        sockaddr_in client_addr;
+        sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
         if (client_fd < 0) {
@@ -260,15 +218,13 @@ int main(int argc, char** argv) {
             perror("accept");
             break;
         }
-        std::thread t(handle_client, client_fd);
-        t.detach();
+        std::thread(handle_client, client_fd).detach();
     }
 
-    // Shutdown
     running = false;
     frame_cv.notify_all();
     close(server_fd);
     cam_thread.join();
-    std::cout << "Shutting down.\n";
+    std::cout << "Server shut down.\n";
     return 0;
 }

@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
 
     // Create GStreamer elements
     GstElement *pipeline = gst_pipeline_new("webcam-pipeline");
-    GstElement *source = gst_element_factory_make("autovideosrc", "source");
+    GstElement *source = gst_element_factory_make("v4l2src", "source");
     GstElement *convert = gst_element_factory_make("videoconvert", "convert");
     GstElement *scale = gst_element_factory_make("videoscale", "scale");
     GstElement *capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
 #ifdef _WIN32
     g_object_set(source, "device-index", 0, NULL); // Windows: first webcam
 #else
-    g_object_set(source, "device", "/dev/video0", NULL); // Linux device
+    g_object_set(source, "device", "/dev/ttyUSB0", NULL); // Linux device
 #endif
 
     GstCaps *caps = gst_caps_new_simple(

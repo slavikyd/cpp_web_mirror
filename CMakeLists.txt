@@ -1,19 +1,14 @@
 cmake_minimum_required(VERSION 3.10)
+project(webcam_streamer LANGUAGES CXX)
 
-project(WebcamStreamServer)
-
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find OpenCV package for webcam/video capture and image encoding
 find_package(OpenCV REQUIRED)
 
-# Find Boost libraries (header-only for Asio or you can link Boost.Asio explicitly)
-find_package(Boost REQUIRED COMPONENTS system thread)
+add_executable(webcam_streamer
+    main.cpp
+)
 
-include_directories(${OpenCV_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
-
-add_executable(webcam_stream src/main.cpp)
-
-target_link_libraries(webcam_stream ${OpenCV_LIBS} ${Boost_LIBRARIES})
-
+target_include_directories(webcam_streamer PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(webcam_streamer PRIVATE ${OpenCV_LIBS})

@@ -10,5 +10,5 @@ pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-video-1.0)
 include_directories(${GST_INCLUDE_DIRS})
 link_directories(${GST_LIBRARY_DIRS})
 
-add_executable(webcam_stream main.cpp)
+add_executable(webcam_stream sender.cpp)
 target_link_libraries(webcam_stream ${GST_LIBRARIES})

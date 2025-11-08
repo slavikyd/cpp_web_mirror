@@ -55,13 +55,15 @@ void camera_thread_func(int device_index, int width = 640, int height = 480, int
             continue;
         }
 
-        // === Overlay crosshair ===
+        //overlay
+
+        //crosshair
         int cx = frame.cols / 2;
         int cy = frame.rows / 2;
         cv::line(frame, cv::Point(cx - 20, cy), cv::Point(cx + 20, cy), cv::Scalar(255, 255, 255), 2);
         cv::line(frame, cv::Point(cx, cy - 20), cv::Point(cx, cy + 20), cv::Scalar(255, 255, 255), 2);
 
-        // === Overlay timestamp ===
+        //time
         auto t = std::time(nullptr);
         std::tm tm = *std::localtime(&t);
         char buf[64];
@@ -69,7 +71,6 @@ void camera_thread_func(int device_index, int width = 640, int height = 480, int
         cv::putText(frame, buf, cv::Point(10, 30),
                     cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
-        // === Encode frame ===
         std::vector<uchar> buf_jpeg;
         cv::imencode(".jpg", frame, buf_jpeg, params);
 
@@ -148,15 +149,15 @@ void handle_client(int client_fd) {
             if (!send_all(client_fd, part_header.c_str(), part_header.size())) break;
             if (!send_all(client_fd, reinterpret_cast<const char*>(frame_copy.data()), frame_copy.size())) break;
             if (!send_all(client_fd, "\r\n", 2)) break;
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 fps
+            
+            // FPS setup here - delay correlates with the frames directly
+            std::this_thread::sleep_for(std::chrono::milliseconds(33)); 
         }
 
         close(client_fd);
         return;
     }
 
-    // 404 fallback
     std::string notfound =
         "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\n404 Not Found";
     send_all(client_fd, notfound.c_str(), notfound.size());
